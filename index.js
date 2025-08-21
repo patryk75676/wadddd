@@ -1,14 +1,22 @@
 const express = require("express");
-const app = express();
-const PORT = process.env.PORT || 3000;
+const bodyParser = require("body-parser");
 
-app.get("/", (req, res) => {
-  res.send("✅ Działa! Twoja aplikacja jest online 🚀");
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+app.use(bodyParser.json());
+
+// Prosty webhook
+app.post("/webhook", (req, res) => {
+  console.log("📩 Webhook received:", req.body);
+  res.status(200).send("Webhook OK");
 });
 
-// opcjonalny ping do budzenia przez UptimeRobot
-app.get("/ping", (req, res) => res.status(200).send("pong"));
+// Test GET
+app.get("/", (req, res) => {
+  res.send("✅ Serwer działa");
+});
 
 app.listen(PORT, () => {
-  console.log(`Serwer działa na porcie ${PORT}`);
+  console.log(`🚀 Serwer działa na porcie ${PORT}`);
 });
