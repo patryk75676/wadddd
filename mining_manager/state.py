@@ -1,5 +1,4 @@
 import threading
-import time
 from collections import deque
 from datetime import datetime
 
@@ -13,12 +12,8 @@ class AppState:
         self.pool_url = "pool.supportxmr.com:3333"
         self.wallet = ""
         self.coin = "xmr"
-        # schedules: device_id -> {stop_at, hours, started_at}  ("_all" for broadcast)
-        self.schedules: dict = {}
-        self._sched_thread = threading.Thread(
-            target=self._schedule_checker, daemon=True
-        )
-        self._sched_thread.start()
+        # device_ids locked into 24/7 mode (mine forever, survive reboots)
+        self.mode_247: set = set()
 
     def register(self, data: dict):
         with self._lock:
@@ -29,6 +24,9 @@ class AppState:
             self.devices[did].update(data)
             self.devices[did]["status"] = "online"
             self.devices[did]["registered_at"] = datetime.utcnow().isoformat()
+            # If 24/7 mode was set while machine was offline, push it now
+            if did in self.mode_247:
+                self.pending[did] = {"action": "set_247", "enabled": True}
 
     def heartbeat(self, data: dict) -> dict:
         with self._lock:
@@ -44,6 +42,7 @@ class AppState:
                 "mining": mining,
                 "hardware": hw,
                 "miner_active": data.get("miner_active", False),
+                "mode_247": data.get("mode_247", False),
             })
             gpu_t = max((g.get("temp_c", 0) for g in hw.get("gpus", [])), default=0)
             self.history[did].append({
@@ -62,7 +61,7 @@ class AppState:
                 ls = dev.get("last_seen")
                 if ls and (now - datetime.fromisoformat(ls)).total_seconds() > 60:
                     dev["status"] = "offline"
-                out.append({**dev, "device_id": did})
+                out.append({**dev, "device_id": did, "mode_247": did in self.mode_247})
             return out
 
     def get_history(self, device_id: str, n: int = 60):
@@ -92,50 +91,31 @@ class AppState:
             self.devices.pop(device_id, None)
             self.history.pop(device_id, None)
             self.pending.pop(device_id, None)
-            self.schedules.pop(device_id, None)
+            self.mode_247.discard(device_id)
 
-    # ── Schedule support ──────────────────────────────────────────────────
+    # ── 24/7 mode ─────────────────────────────────────────────────────────
 
-    def set_schedule(self, device_id: str, hours: float):
-        """Start mining and schedule automatic stop after `hours` (0 = indefinite)."""
-        now = time.time()
-        entry = {
-            "started_at": now,
-            "hours": hours,
-            "stop_at": now + hours * 3600 if hours > 0 else None,
-        }
+    def set_247(self, device_id: str, enabled: bool):
+        """Enable/disable 24/7 mining on a device (or '_all' for broadcast)."""
         with self._lock:
-            self.schedules[device_id] = entry
             if device_id == "_all":
-                for did in self.devices:
-                    self.pending[did] = {"action": "start"}
+                targets = list(self.devices.keys())
+                if enabled:
+                    self.mode_247.update(targets)
+                else:
+                    self.mode_247.clear()
+                for did in targets:
+                    self.pending[did] = {"action": "set_247", "enabled": enabled}
             else:
-                self.pending[device_id] = {"action": "start"}
+                if enabled:
+                    self.mode_247.add(device_id)
+                else:
+                    self.mode_247.discard(device_id)
+                self.pending[device_id] = {"action": "set_247", "enabled": enabled}
 
-    def cancel_schedule(self, device_id: str):
+    def get_247(self, device_id: str) -> bool:
         with self._lock:
-            self.schedules.pop(device_id, None)
-
-    def get_schedule(self, device_id: str) -> dict | None:
-        with self._lock:
-            return self.schedules.get(device_id) or self.schedules.get("_all")
-
-    def _schedule_checker(self):
-        while True:
-            time.sleep(30)
-            now = time.time()
-            with self._lock:
-                expired = [
-                    did for did, s in self.schedules.items()
-                    if s.get("stop_at") and now >= s["stop_at"]
-                ]
-                for did in expired:
-                    del self.schedules[did]
-                    if did == "_all":
-                        for d in self.devices:
-                            self.pending[d] = {"action": "stop"}
-                    elif did in self.devices:
-                        self.pending[did] = {"action": "stop"}
+            return device_id in self.mode_247
 
 
 STATE = AppState()

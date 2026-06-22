@@ -25,7 +25,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("agent")
 
-CONFIG_PATH = Path("xmrig_config.json")
+CONFIG_PATH  = Path("xmrig_config.json")
+MODE_247_PATH = Path("247_mode.json")
 
 
 # ── XMRig Manager ──────────────────────────────────────────────────────────
@@ -77,17 +78,21 @@ class XMRigManager:
         with self._lock:
             return self._proc is not None and self._proc.poll() is None
 
-    def start_watchdog(self):
+    def start_watchdog(self, aggressive: bool = False):
+        """aggressive=True: check every 2s, restart within 3s (used in 24/7 mode)."""
         self._running = True
+        wait = self.CRASH_WAIT if not aggressive else 3
+        interval = 2 if aggressive else 5
+
         def _watch():
             time.sleep(20)
             while self._running:
                 if not self.is_running():
-                    log.warning(f"XMRig crashował — restart za {self.CRASH_WAIT}s")
-                    time.sleep(self.CRASH_WAIT)
+                    log.warning(f"XMRig crashował — restart za {wait}s")
+                    time.sleep(wait)
                     if self._running:
                         self.start()
-                time.sleep(5)
+                time.sleep(interval)
         threading.Thread(target=_watch, daemon=True).start()
 
     def stop_watchdog(self):
@@ -210,6 +215,19 @@ class MiningAgent:
         self.hw_summary   = {}
         self._hb_fails    = 0
         self._quit        = False
+        self._mode_247    = self._load_247()
+
+    # ── 24/7 persistence ────────────────────────────────────────────────────
+    @staticmethod
+    def _load_247() -> bool:
+        try:
+            return json.loads(MODE_247_PATH.read_text()).get("enabled", False)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _save_247(enabled: bool):
+        MODE_247_PATH.write_text(json.dumps({"enabled": enabled}))
 
     # ── WoL ─────────────────────────────────────────────────────────────────
     def _setup_wol(self):
@@ -298,6 +316,7 @@ class MiningAgent:
                 "timestamp": datetime.utcnow().isoformat(),
                 "mining": mining, "hardware": hw,
                 "miner_active": self.xmrig.is_running(),
+                "mode_247": self._mode_247,
             }, timeout=5)
             if r.ok:
                 self._hb_fails = 0
@@ -315,10 +334,26 @@ class MiningAgent:
         action = cmd.get("action")
         if not action: return
         log.info(f"[CMD] {action}")
-        if action == "start":
+        if action == "set_247":
+            enabled = cmd.get("enabled", True)
+            self._mode_247 = enabled
+            self._save_247(enabled)
+            if enabled:
+                log.info("[247] Tryb 24/7 WŁĄCZONY — kopanie nieustanne")
+                self.xmrig.stop_watchdog()
+                self.xmrig.start_watchdog(aggressive=True)
+                self.xmrig.start()
+            else:
+                log.info("[247] Tryb 24/7 WYŁĄCZONY")
+                self.xmrig.stop_watchdog()
+                self.xmrig.start_watchdog(aggressive=False)
+        elif action == "start":
             self.xmrig.start()
         elif action == "stop":
-            self.xmrig.stop_watchdog(); self.xmrig.stop()
+            if self._mode_247:
+                log.info("[247] Tryb 24/7 aktywny — ignoruję polecenie stop")
+            else:
+                self.xmrig.stop_watchdog(); self.xmrig.stop()
         elif action == "restart":
             self.xmrig.stop(); time.sleep(3); self.xmrig.start()
         elif action == "reconfigure":
@@ -368,7 +403,9 @@ class MiningAgent:
             log.info("Ponowna próba za 30s..."); time.sleep(30)
 
         self.xmrig.start()
-        self.xmrig.start_watchdog()
+        self.xmrig.start_watchdog(aggressive=self._mode_247)
+        if self._mode_247:
+            log.info("[247] Tryb 24/7 aktywny — agresywny watchdog")
 
         log.info("Agent aktywny.")
         try:

@@ -111,6 +111,12 @@ QPushButton#nav_btn[active="true"] {
     opacity: 0.6;
 }
 
+#device_card[status="247"] {
+    border: 1px solid rgba(240, 136, 62, 0.45);
+    border-left: 3px solid #f0883e;
+    background-color: rgba(240, 136, 62, 0.04);
+}
+
 #device_card:hover {
     border-color: #30363d;
     border-left-color: inherit;

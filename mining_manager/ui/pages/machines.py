@@ -1,11 +1,10 @@
-import time
 from PyQt6.QtWidgets import (
     QWidget, QScrollArea, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame, QProgressBar, QSizePolicy, QMessageBox,
-    QDialog, QButtonGroup,
+    QDialog,
 )
-from PyQt6.QtCore import Qt, QPoint, QSize
-from PyQt6.QtGui import QPainter, QPen, QColor, QPolygon, QFont
+from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtGui import QPainter, QPen, QColor, QPolygon
 
 from state import STATE
 from ui.flow_layout import FlowLayout
@@ -64,7 +63,6 @@ class SparklineWidget(QWidget):
         for i in range(1, len(pts)):
             p.drawLine(pts[i - 1], pts[i])
 
-        # Last value dot
         if pts:
             p.setBrush(QColor("#00ff88"))
             p.setPen(Qt.PenStyle.NoPen)
@@ -108,83 +106,12 @@ class GpuChip(QFrame):
         layout.addWidget(bar)
 
 
-def _fmt_remaining(sched: dict) -> str:
-    stop_at = sched.get("stop_at")
-    if not stop_at:
-        return "∞  Non-stop"
-    remaining = max(0, stop_at - time.time())
-    h = int(remaining // 3600)
-    m = int((remaining % 3600) // 60)
-    s = int(remaining % 60)
-    return f"⏱  {h:02d}:{m:02d}:{s:02d}"
-
-
-class ScheduleDialog(QDialog):
-    OPTS = [
-        ("1 godzina",  1),
-        ("6 godzin",   6),
-        ("12 godzin", 12),
-        ("24 godziny", 24),
-        ("48 godzin",  48),
-        ("Non-stop",    0),
-    ]
-
-    def __init__(self, device_id: str, hostname: str, parent=None):
-        super().__init__(parent)
-        self.device_id = device_id
-        self.chosen_hours: float | None = None
-        self.setWindowTitle(f"Harmonogram — {hostname}")
-        self.setModal(True)
-        self.setFixedWidth(300)
-        self.setStyleSheet(
-            "QDialog{background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:10px;}"
-            "QLabel{background:transparent;color:#e6edf3;}"
-        )
-        self._build_ui(hostname)
-
-    def _build_ui(self, hostname: str):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 18)
-        root.setSpacing(10)
-
-        title = QLabel(f"⏱  Kopaj przez…")
-        title.setStyleSheet("font-size:14px;font-weight:bold;color:#e6edf3;")
-        root.addWidget(title)
-
-        sub = QLabel(f"Maszyna: <b style='color:#58a6ff'>{hostname}</b>")
-        sub.setStyleSheet("color:#7d8590;font-size:11px;")
-        root.addWidget(sub)
-
-        for label, hours in self.OPTS:
-            btn = QPushButton(label)
-            btn.setStyleSheet(
-                "QPushButton{background:#21262d;border:1px solid #30363d;border-radius:6px;"
-                "color:#e6edf3;padding:8px;font-size:12px;text-align:left;}"
-                "QPushButton:hover{background:#2d333b;border-color:#58a6ff;color:#58a6ff;}"
-            )
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.clicked.connect(lambda c=False, h=hours: self._pick(h))
-            root.addWidget(btn)
-
-        cancel = QPushButton("Anuluj")
-        cancel.setStyleSheet(
-            "QPushButton{background:transparent;border:1px solid #30363d;border-radius:6px;"
-            "color:#7d8590;padding:6px;font-size:11px;}"
-            "QPushButton:hover{border-color:#f85149;color:#f85149;}"
-        )
-        cancel.clicked.connect(self.reject)
-        root.addWidget(cancel)
-
-    def _pick(self, hours: float):
-        self.chosen_hours = hours
-        self.accept()
-
-
 class DeviceCard(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("device_card")
         self.device_id: str | None = None
+        self._is_247 = False
         self.setFixedWidth(354)
         self._build_ui()
 
@@ -198,11 +125,23 @@ class DeviceCard(QFrame):
         hdr.setSpacing(6)
         self.lbl_host = QLabel("—")
         self.lbl_host.setObjectName("lbl_hostname")
+
+        self.lbl_247 = QLabel("24/7")
+        self.lbl_247.setFixedWidth(34)
+        self.lbl_247.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_247.setStyleSheet(
+            "background:#f0883e;color:#0d1117;border-radius:4px;"
+            "font-size:9px;font-weight:bold;padding:2px 4px;"
+        )
+        self.lbl_247.hide()
+
         self.lbl_status = QLabel("OFF")
         self.lbl_status.setObjectName("badge_off")
         self.lbl_status.setFixedWidth(38)
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         hdr.addWidget(self.lbl_host, 1)
+        hdr.addWidget(self.lbl_247)
         hdr.addWidget(self.lbl_status)
         root.addLayout(hdr)
 
@@ -267,30 +206,20 @@ class DeviceCard(QFrame):
         self.lbl_shares.setObjectName("lbl_muted")
         root.addWidget(self.lbl_shares)
 
-        # ── Schedule countdown ────────────────
-        self.lbl_sched = QLabel("")
-        self.lbl_sched.setObjectName("lbl_muted")
-        self.lbl_sched.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_sched.setStyleSheet(
-            "color:#f0883e;font-size:11px;font-weight:600;background:transparent;"
-        )
-        self.lbl_sched.hide()
-        root.addWidget(self.lbl_sched)
-
         # ── Buttons ───────────────────────────
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
 
-        self.btn_start = self._btn("▶", "btn_green", "Start XMRig")
-        self.btn_restart = self._btn("↺", "btn_icon", "Restart XMRig")
-        self.btn_stop = self._btn("■", "btn_red", "Zatrzymaj XMRig")
-        self.btn_sched = self._btn("⏱", "btn_icon", "Harmonogram kopania")
-        self.btn_sched.setFixedWidth(34)
-        self.btn_uninst = self._btn("⛔", "btn_red", "Odinstaluj agenta")
+        self.btn_start   = self._btn("▶",  "btn_green", "Start XMRig")
+        self.btn_restart = self._btn("↺",  "btn_icon",  "Restart XMRig")
+        self.btn_stop    = self._btn("■",  "btn_red",   "Zatrzymaj XMRig")
+        self.btn_247     = self._btn("24/7", "btn_icon", "Tryb 24/7 — kopaj nieustannie, nawet po restarcie/wyłączeniu")
+        self.btn_247.setFixedWidth(42)
+        self.btn_uninst  = self._btn("⛔", "btn_red",   "Odinstaluj agenta")
         self.btn_uninst.setFixedWidth(34)
 
         for b in [self.btn_start, self.btn_restart, self.btn_stop,
-                  self.btn_sched, self.btn_uninst]:
+                  self.btn_247, self.btn_uninst]:
             btn_row.addWidget(b)
 
         root.addLayout(btn_row)
@@ -320,16 +249,34 @@ class DeviceCard(QFrame):
         self.lbl_status.style().unpolish(self.lbl_status)
         self.lbl_status.style().polish(self.lbl_status)
 
-    def _set_card_border(self, status: str):
-        self.setProperty("status", status)
+    def _set_card_border(self, status: str, is_247: bool):
+        prop = "247" if is_247 else status
+        self.setProperty("status", prop)
         self.style().unpolish(self)
         self.style().polish(self)
+
+    def _set_247_style(self, active: bool):
+        self._is_247 = active
+        if active:
+            self.lbl_247.show()
+            self.btn_247.setStyleSheet(
+                "QPushButton{background:#f0883e;border:none;border-radius:5px;"
+                "color:#0d1117;font-weight:bold;font-size:9px;padding:4px 6px;}"
+                "QPushButton:hover{background:#e07830;}"
+            )
+        else:
+            self.lbl_247.hide()
+            self.btn_247.setStyleSheet("")
+            self.btn_247.setObjectName("btn_icon")
+            self.btn_247.style().unpolish(self.btn_247)
+            self.btn_247.style().polish(self.btn_247)
 
     def update_device(self, dev: dict):
         did = dev["device_id"]
         self.device_id = did
         status = dev.get("status", "offline")
         online = status == "online"
+        is_247 = dev.get("mode_247", False) or STATE.get_247(did)
 
         hostname = dev.get("hostname") or did
         self.lbl_host.setText(f"🖥  {hostname}")
@@ -341,7 +288,8 @@ class DeviceCard(QFrame):
             + (f"  ·  {ram} GB RAM" if ram else "")
         )
         self._set_status_badge(online)
-        self._set_card_border(status)
+        self._set_card_border(status, is_247)
+        self._set_247_style(is_247)
 
         if online:
             mining = dev.get("mining") or {}
@@ -351,6 +299,7 @@ class DeviceCard(QFrame):
             hr1 = mining.get("hashrate_1m") or 0
             hr15 = mining.get("hashrate_15m") or 0
             self.lbl_hr.setText(fmt_hr(hr))
+            self.lbl_hr.setStyleSheet("")
             self.lbl_hr_sub.setText(f"1m: {fmt_hr(hr1)}  ·  15m: {fmt_hr(hr15)}")
 
             cpu = float(hw.get("cpu_percent") or 0)
@@ -360,7 +309,6 @@ class DeviceCard(QFrame):
             self.lbl_cpu.setText(f"{cpu:.0f}%")
             self.lbl_ram.setText(f"{ram_pct:.0f}%")
 
-            # GPU chips
             while self.gpu_row.count():
                 item = self.gpu_row.takeAt(0)
                 if item.widget():
@@ -371,11 +319,9 @@ class DeviceCard(QFrame):
             if not gpus:
                 self.gpu_row.addStretch()
 
-            # Sparkline
             hist = STATE.get_history(did, 80)
             self.sparkline.set_data([h["hr"] for h in hist])
 
-            # Shares
             acc = mining.get("accepted") or 0
             rej = mining.get("rejected") or 0
             pool = (mining.get("pool") or "").split(".")[0] or "—"
@@ -388,17 +334,9 @@ class DeviceCard(QFrame):
             self.lbl_hr.setText("offline")
             self.lbl_hr.setStyleSheet("color: #484f58;")
 
-        # Schedule countdown
-        sched = STATE.get_schedule(did)
-        if sched:
-            self.lbl_sched.setText(_fmt_remaining(sched))
-            self.lbl_sched.show()
-        else:
-            self.lbl_sched.hide()
-
         # Reconnect buttons
         for btn in [self.btn_start, self.btn_stop, self.btn_restart,
-                    self.btn_sched, self.btn_uninst]:
+                    self.btn_247, self.btn_uninst]:
             try:
                 btn.clicked.disconnect()
             except Exception:
@@ -406,17 +344,19 @@ class DeviceCard(QFrame):
 
         hn = hostname
         self.btn_start.clicked.connect(lambda: STATE.command(did, {"action": "start"}))
-        self.btn_stop.clicked.connect(lambda: (
-            STATE.cancel_schedule(did), STATE.command(did, {"action": "stop"})
-        ))
+        self.btn_stop.clicked.connect(lambda: STATE.command(did, {"action": "stop"}))
         self.btn_restart.clicked.connect(lambda: STATE.command(did, {"action": "restart"}))
-        self.btn_sched.clicked.connect(lambda: self._open_schedule(did, hn))
+        self.btn_247.clicked.connect(lambda: self._toggle_247(did))
         self.btn_uninst.clicked.connect(lambda: self._ask_uninstall(did, hn))
 
-    def _open_schedule(self, device_id: str, hostname: str):
-        dlg = ScheduleDialog(device_id, hostname, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.chosen_hours is not None:
-            STATE.set_schedule(device_id, dlg.chosen_hours)
+    def _toggle_247(self, device_id: str):
+        currently = STATE.get_247(device_id)
+        new_state = not currently
+        STATE.set_247(device_id, new_state)
+        self._set_247_style(new_state)
+        if new_state:
+            # Also send start so mining begins immediately if not already running
+            STATE.command(device_id, {"action": "set_247", "enabled": True})
 
     def _ask_uninstall(self, device_id: str, hostname: str):
         dlg = QMessageBox(self)
@@ -461,8 +401,8 @@ class MachinesPage(QWidget):
 
         for label, action, obj in [
             ("▶  Start wszystkie", "start", "btn_green"),
-            ("■  Stop", "stop", "btn_red"),
-            ("↺  Restart", "restart", ""),
+            ("■  Stop",            "stop",  "btn_red"),
+            ("↺  Restart",         "restart", ""),
         ]:
             btn = QPushButton(label)
             btn.setObjectName(obj)
@@ -470,12 +410,20 @@ class MachinesPage(QWidget):
             btn.clicked.connect(lambda c=False, a=action: STATE.broadcast({"action": a}))
             toolbar.addWidget(btn)
 
-        sched_all_btn = QPushButton("⏱  Harmonogram")
-        sched_all_btn.setObjectName("btn_icon")
-        sched_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        sched_all_btn.setToolTip("Ustaw harmonogram kopania dla WSZYSTKICH maszyn")
-        sched_all_btn.clicked.connect(self._open_schedule_all)
-        toolbar.addWidget(sched_all_btn)
+        btn_247_all = QPushButton("🔒  24/7 WSZYSTKIE")
+        btn_247_all.setObjectName("btn_icon")
+        btn_247_all.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_247_all.setToolTip(
+            "Włącz tryb 24/7 na WSZYSTKICH maszynach — kopią bez przerwy, "
+            "auto-restart po wyłączeniu"
+        )
+        btn_247_all.setStyleSheet(
+            "QPushButton{background:#2d1f0a;border:1px solid #f0883e;border-radius:6px;"
+            "color:#f0883e;font-weight:bold;padding:5px 12px;}"
+            "QPushButton:hover{background:#3d2b0f;}"
+        )
+        btn_247_all.clicked.connect(lambda: STATE.set_247("_all", True))
+        toolbar.addWidget(btn_247_all)
 
         toolbar.addStretch()
         self.lbl_count = QLabel("")
@@ -494,11 +442,6 @@ class MachinesPage(QWidget):
 
         scroll.setWidget(self._grid_w)
         root.addWidget(scroll)
-
-    def _open_schedule_all(self):
-        dlg = ScheduleDialog("_all", "WSZYSTKIE MASZYNY", self)
-        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.chosen_hours is not None:
-            STATE.set_schedule("_all", dlg.chosen_hours)
 
     def refresh(self):
         devices = STATE.get_devices()
@@ -520,8 +463,10 @@ class MachinesPage(QWidget):
                 card.deleteLater()
 
         online = sum(1 for d in devices if d.get("status") == "online")
+        locked = sum(1 for d in devices if d.get("mode_247"))
         total = len(devices)
-        self.lbl_count.setText(
-            f"{online} online  ·  {total - online} offline  ·  {total} łącznie"
-        )
+        parts = [f"{online} online", f"{total - online} offline", f"{total} łącznie"]
+        if locked:
+            parts.append(f"🔒 {locked} × 24/7")
+        self.lbl_count.setText("  ·  ".join(parts))
         self._grid_w.update()
