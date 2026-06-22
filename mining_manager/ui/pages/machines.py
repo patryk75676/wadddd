@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QScrollArea, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QFrame, QProgressBar, QSizePolicy, QMessageBox,
-    QDialog,
+    QLabel, QPushButton, QFrame, QProgressBar, QSizePolicy,
+    QDialog, QLineEdit,
 )
 from PyQt6.QtCore import Qt, QPoint
 from PyQt6.QtGui import QPainter, QPen, QColor, QPolygon
@@ -106,6 +106,84 @@ class GpuChip(QFrame):
         layout.addWidget(bar)
 
 
+class RenameDialog(QDialog):
+    def __init__(self, current: str, parent=None):
+        super().__init__(parent)
+        self.new_name: str | None = None
+        self.setWindowTitle("Zmień nazwę maszyny")
+        self.setModal(True)
+        self.setFixedWidth(320)
+        self.setStyleSheet(
+            "QDialog{background:#161b22;border:1px solid #30363d;border-radius:10px;}"
+            "QLabel{background:transparent;}"
+        )
+        self._build(current)
+
+    def _build(self, current: str):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(12)
+
+        title = QLabel("✏  Nazwa wyświetlana")
+        title.setStyleSheet("color:#e6edf3;font-size:13px;font-weight:bold;")
+        root.addWidget(title)
+
+        sub = QLabel("Własna nazwa zastępuje hostname w dashboardzie.\nPo formacie i reinstalacji agenta nazwa zostaje.")
+        sub.setStyleSheet("color:#7d8590;font-size:11px;")
+        sub.setWordWrap(True)
+        root.addWidget(sub)
+
+        self.inp = QLineEdit(current)
+        self.inp.setPlaceholderText("np. Lenovo Legion 1 · Górna półka")
+        self.inp.setStyleSheet(
+            "background:#0d1117;border:1px solid #30363d;border-radius:6px;"
+            "color:#e6edf3;padding:8px 12px;font-size:12px;"
+        )
+        self.inp.returnPressed.connect(self._save)
+        self.inp.selectAll()
+        root.addWidget(self.inp)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        save_btn = QPushButton("Zapisz")
+        save_btn.setStyleSheet(
+            "background:#3fb950;border:none;border-radius:6px;"
+            "color:#0d1117;font-weight:bold;padding:8px 18px;"
+        )
+        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_btn.clicked.connect(self._save)
+
+        clear_btn = QPushButton("Usuń nazwę")
+        clear_btn.setStyleSheet(
+            "background:transparent;border:1px solid #30363d;border-radius:6px;"
+            "color:#7d8590;padding:8px 14px;"
+        )
+        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_btn.clicked.connect(self._clear)
+
+        cancel_btn = QPushButton("Anuluj")
+        cancel_btn.setStyleSheet(
+            "background:transparent;border:1px solid #30363d;border-radius:6px;"
+            "color:#7d8590;padding:8px 14px;"
+        )
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel_btn.clicked.connect(self.reject)
+
+        btn_row.addWidget(save_btn)
+        btn_row.addWidget(clear_btn)
+        btn_row.addWidget(cancel_btn)
+        root.addLayout(btn_row)
+
+    def _save(self):
+        self.new_name = self.inp.text().strip()
+        self.accept()
+
+    def _clear(self):
+        self.new_name = ""
+        self.accept()
+
+
 class DeviceCard(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -118,13 +196,24 @@ class DeviceCard(QFrame):
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 12, 14, 12)
-        root.setSpacing(9)
+        root.setSpacing(8)
 
-        # ── Header ────────────────────────────
+        # ── Header row ────────────────────────
         hdr = QHBoxLayout()
-        hdr.setSpacing(6)
+        hdr.setSpacing(5)
+
         self.lbl_host = QLabel("—")
         self.lbl_host.setObjectName("lbl_hostname")
+
+        # Rename button — small pencil icon
+        self.btn_rename = QPushButton("✏")
+        self.btn_rename.setFixedSize(22, 22)
+        self.btn_rename.setToolTip("Zmień nazwę maszyny")
+        self.btn_rename.setStyleSheet(
+            "QPushButton{background:transparent;border:none;color:#484f58;font-size:11px;padding:0;}"
+            "QPushButton:hover{color:#7d8590;}"
+        )
+        self.btn_rename.setCursor(Qt.CursorShape.PointingHandCursor)
 
         self.lbl_247 = QLabel("24/7")
         self.lbl_247.setFixedWidth(34)
@@ -141,9 +230,18 @@ class DeviceCard(QFrame):
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         hdr.addWidget(self.lbl_host, 1)
+        hdr.addWidget(self.btn_rename)
         hdr.addWidget(self.lbl_247)
         hdr.addWidget(self.lbl_status)
         root.addLayout(hdr)
+
+        # ── System model + specs ──────────────
+        self.lbl_model = QLabel("")
+        self.lbl_model.setStyleSheet(
+            "color:#58a6ff;font-size:11px;font-weight:600;background:transparent;"
+        )
+        self.lbl_model.hide()
+        root.addWidget(self.lbl_model)
 
         self.lbl_sub = QLabel("—")
         self.lbl_sub.setObjectName("lbl_sub")
@@ -210,16 +308,13 @@ class DeviceCard(QFrame):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
 
-        self.btn_start   = self._btn("▶",  "btn_green", "Start XMRig")
-        self.btn_restart = self._btn("↺",  "btn_icon",  "Restart XMRig")
-        self.btn_stop    = self._btn("■",  "btn_red",   "Zatrzymaj XMRig")
-        self.btn_247     = self._btn("24/7", "btn_icon", "Tryb 24/7 — kopaj nieustannie, nawet po restarcie/wyłączeniu")
+        self.btn_start   = self._btn("▶",    "btn_green", "Start XMRig")
+        self.btn_restart = self._btn("↺",    "btn_icon",  "Restart XMRig")
+        self.btn_stop    = self._btn("■",    "btn_red",   "Zatrzymaj XMRig")
+        self.btn_247     = self._btn("24/7", "btn_icon",  "Tryb 24/7 — kopaj nieustannie, nawet po wyłączeniu / restarcie")
         self.btn_247.setFixedWidth(42)
-        self.btn_uninst  = self._btn("⛔", "btn_red",   "Odinstaluj agenta")
-        self.btn_uninst.setFixedWidth(34)
 
-        for b in [self.btn_start, self.btn_restart, self.btn_stop,
-                  self.btn_247, self.btn_uninst]:
+        for b in [self.btn_start, self.btn_restart, self.btn_stop, self.btn_247]:
             btn_row.addWidget(b)
 
         root.addLayout(btn_row)
@@ -279,12 +374,23 @@ class DeviceCard(QFrame):
         is_247 = dev.get("mode_247", False) or STATE.get_247(did)
 
         hostname = dev.get("hostname") or did
-        self.lbl_host.setText(f"🖥  {hostname}")
-        platform = dev.get("platform") or ""
+        custom = dev.get("custom_name") or ""
+        display_name = custom if custom else hostname
+        self.lbl_host.setText(f"🖥  {display_name}")
+
+        # System model line
+        model = dev.get("system_model") or ""
+        if model:
+            self.lbl_model.setText(f"   {model}")
+            self.lbl_model.show()
+        else:
+            self.lbl_model.hide()
+
+        platform_name = dev.get("platform") or ""
         cpu_c = dev.get("cpu_count") or "?"
         ram = dev.get("ram_gb") or ""
         self.lbl_sub.setText(
-            f"{platform}  ·  {cpu_c}× CPU"
+            f"{platform_name}  ·  {cpu_c}× CPU"
             + (f"  ·  {ram} GB RAM" if ram else "")
         )
         self._set_status_badge(online)
@@ -336,48 +442,27 @@ class DeviceCard(QFrame):
 
         # Reconnect buttons
         for btn in [self.btn_start, self.btn_stop, self.btn_restart,
-                    self.btn_247, self.btn_uninst]:
+                    self.btn_247, self.btn_rename]:
             try:
                 btn.clicked.disconnect()
             except Exception:
                 pass
 
-        hn = hostname
         self.btn_start.clicked.connect(lambda: STATE.command(did, {"action": "start"}))
         self.btn_stop.clicked.connect(lambda: STATE.command(did, {"action": "stop"}))
         self.btn_restart.clicked.connect(lambda: STATE.command(did, {"action": "restart"}))
         self.btn_247.clicked.connect(lambda: self._toggle_247(did))
-        self.btn_uninst.clicked.connect(lambda: self._ask_uninstall(did, hn))
+        self.btn_rename.clicked.connect(lambda: self._open_rename(did, custom or hostname))
 
     def _toggle_247(self, device_id: str):
         currently = STATE.get_247(device_id)
-        new_state = not currently
-        STATE.set_247(device_id, new_state)
-        self._set_247_style(new_state)
-        if new_state:
-            # Also send start so mining begins immediately if not already running
-            STATE.command(device_id, {"action": "set_247", "enabled": True})
+        STATE.set_247(device_id, not currently)
+        self._set_247_style(not currently)
 
-    def _ask_uninstall(self, device_id: str, hostname: str):
-        dlg = QMessageBox(self)
-        dlg.setWindowTitle("Odinstalowanie agenta")
-        dlg.setText(
-            f"<b>Odinstalować agenta z maszyny <span style='color:#f0883e'>{hostname}</span>?</b><br><br>"
-            "Agent zatrzyma XMRig, usunie usługę systemową i wszystkie pliki.<br>"
-            "<span style='color:#f85149'>Operacja jest nieodwracalna.</span>"
-        )
-        dlg.setStandardButtons(
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        dlg.setDefaultButton(QMessageBox.StandardButton.No)
-        dlg.setStyleSheet(
-            "QMessageBox{background:#161b22;color:#e6edf3;}"
-            "QPushButton{background:#21262d;border:1px solid #30363d;"
-            "border-radius:6px;color:#e6edf3;padding:6px 18px;}"
-            "QPushButton:hover{border-color:#f85149;color:#f85149;}"
-        )
-        if dlg.exec() == QMessageBox.StandardButton.Yes:
-            STATE.command(device_id, {"action": "uninstall"})
+    def _open_rename(self, device_id: str, current: str):
+        dlg = RenameDialog(current, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.new_name is not None:
+            STATE.set_custom_name(device_id, dlg.new_name)
 
 
 class MachinesPage(QWidget):
@@ -400,8 +485,8 @@ class MachinesPage(QWidget):
         toolbar.addWidget(lbl)
 
         for label, action, obj in [
-            ("▶  Start wszystkie", "start", "btn_green"),
-            ("■  Stop",            "stop",  "btn_red"),
+            ("▶  Start wszystkie", "start",   "btn_green"),
+            ("■  Stop",            "stop",    "btn_red"),
             ("↺  Restart",         "restart", ""),
         ]:
             btn = QPushButton(label)
@@ -413,10 +498,7 @@ class MachinesPage(QWidget):
         btn_247_all = QPushButton("🔒  24/7 WSZYSTKIE")
         btn_247_all.setObjectName("btn_icon")
         btn_247_all.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_247_all.setToolTip(
-            "Włącz tryb 24/7 na WSZYSTKICH maszynach — kopią bez przerwy, "
-            "auto-restart po wyłączeniu"
-        )
+        btn_247_all.setToolTip("Włącz tryb 24/7 na wszystkich maszynach")
         btn_247_all.setStyleSheet(
             "QPushButton{background:#2d1f0a;border:1px solid #f0883e;border-radius:6px;"
             "color:#f0883e;font-weight:bold;padding:5px 12px;}"

@@ -11,10 +11,45 @@ Generuje config.json dla XMRig dopasowany do tego konkretnego sprzętu.
 """
 
 import os, sys, json, subprocess, platform, re, math
+from pathlib import Path
 import psutil
 import logging
 
 log = logging.getLogger("hw_detect")
+
+
+def detect_system_model() -> str:
+    """Detect manufacturer + model name (e.g. 'Lenovo Legion Go')."""
+    sys_type = platform.system()
+    try:
+        if sys_type == "Windows":
+            r = subprocess.run(
+                ["wmic", "computersystem", "get", "Manufacturer,Model", "/value"],
+                capture_output=True, text=True, timeout=6,
+            )
+            manufacturer = model = ""
+            for line in r.stdout.splitlines():
+                if "Manufacturer=" in line:
+                    manufacturer = line.split("=", 1)[1].strip()
+                elif "Model=" in line:
+                    model = line.split("=", 1)[1].strip()
+            result = f"{manufacturer} {model}".strip()
+            # Filter out generic/useless values
+            generic = {"system product name", "to be filled by o.e.m.", ""}
+            if result.lower() in generic:
+                return ""
+            return result
+        elif sys_type == "Linux":
+            vendor = Path("/sys/class/dmi/id/sys_vendor").read_text().strip()
+            name   = Path("/sys/class/dmi/id/product_name").read_text().strip()
+            result = f"{vendor} {name}".strip()
+            generic = {"to be filled by o.e.m.", "system product name"}
+            if result.lower() in generic:
+                return ""
+            return result
+    except Exception:
+        pass
+    return ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────

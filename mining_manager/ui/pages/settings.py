@@ -1,7 +1,8 @@
 import socket
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QFrame, QComboBox, QScrollArea,
+    QLineEdit, QPushButton, QFrame, QComboBox, QScrollArea, QDialog,
+    QMessageBox,
 )
 from PyQt6.QtCore import Qt
 
@@ -38,6 +39,88 @@ def _section(title: str) -> QLabel:
     return l
 
 
+class UninstallConfirmDialog(QDialog):
+    """Force user to type the device name before uninstalling."""
+
+    def __init__(self, device_id: str, display_name: str, parent=None):
+        super().__init__(parent)
+        self.device_id = device_id
+        self.confirmed = False
+        self._required = display_name
+        self.setWindowTitle("Odinstaluj agenta")
+        self.setModal(True)
+        self.setFixedWidth(380)
+        self.setStyleSheet(
+            "QDialog{background:#161b22;border:1px solid #30363d;}"
+            "QLabel{background:transparent;}"
+        )
+        self._build(display_name)
+
+    def _build(self, name: str):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 20, 22, 20)
+        root.setSpacing(12)
+
+        title = QLabel("⛔  Odinstalowanie agenta")
+        title.setStyleSheet("color:#f85149;font-size:14px;font-weight:bold;")
+        root.addWidget(title)
+
+        warn = QLabel(
+            f"Agent zostanie trwale usunięty z maszyny\n"
+            f"<b style='color:#e6edf3'>{name}</b>.\n\n"
+            f"XMRig zatrzyma się. Usługa systemowa i wszystkie pliki zostaną usunięte.\n"
+            f"<span style='color:#f85149'>Operacja jest NIEODWRACALNA.</span>"
+        )
+        warn.setStyleSheet("color:#7d8590;font-size:12px;line-height:1.5;")
+        warn.setWordWrap(True)
+        root.addWidget(warn)
+
+        confirm_lbl = QLabel(f"Wpisz nazwę maszyny aby potwierdzić: <b style='color:#f0883e'>{name}</b>")
+        confirm_lbl.setStyleSheet("color:#7d8590;font-size:11px;")
+        confirm_lbl.setWordWrap(True)
+        root.addWidget(confirm_lbl)
+
+        self.inp = QLineEdit()
+        self.inp.setPlaceholderText(f"Wpisz: {name}")
+        self.inp.setStyleSheet(
+            "background:#0d1117;border:1px solid #30363d;border-radius:6px;"
+            "color:#e6edf3;padding:8px 12px;font-size:12px;"
+        )
+        self.inp.textChanged.connect(self._check)
+        root.addWidget(self.inp)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        self.uninst_btn = QPushButton("Odinstaluj")
+        self.uninst_btn.setEnabled(False)
+        self.uninst_btn.setStyleSheet(
+            "QPushButton{background:rgba(248,81,73,0.15);border:1px solid #f85149;"
+            "border-radius:6px;color:#f85149;font-weight:bold;padding:8px 16px;}"
+            "QPushButton:disabled{background:transparent;border-color:#30363d;color:#484f58;}"
+            "QPushButton:enabled:hover{background:rgba(248,81,73,0.25);}"
+        )
+        self.uninst_btn.clicked.connect(self._confirm)
+
+        cancel_btn = QPushButton("Anuluj")
+        cancel_btn.setStyleSheet(
+            "background:transparent;border:1px solid #30363d;border-radius:6px;"
+            "color:#7d8590;padding:8px 16px;"
+        )
+        cancel_btn.clicked.connect(self.reject)
+
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(self.uninst_btn)
+        root.addLayout(btn_row)
+
+    def _check(self, text: str):
+        self.uninst_btn.setEnabled(text.strip() == self._required)
+
+    def _confirm(self):
+        self.confirmed = True
+        self.accept()
+
+
 class SettingsPage(QWidget):
     def __init__(self):
         super().__init__()
@@ -45,7 +128,6 @@ class SettingsPage(QWidget):
         self._build_ui()
 
     def _build_ui(self):
-        # Scrollable content
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -64,7 +146,6 @@ class SettingsPage(QWidget):
         ml.setContentsMargins(18, 14, 18, 14)
         ml.setSpacing(12)
 
-        # Pool
         pool_row = QHBoxLayout()
         pool_lbl = QLabel("Pool:")
         pool_lbl.setObjectName("lbl_muted")
@@ -76,7 +157,6 @@ class SettingsPage(QWidget):
         pool_row.addWidget(self.pool_inp)
         ml.addLayout(pool_row)
 
-        # Wallet
         wallet_row = QHBoxLayout()
         wallet_lbl = QLabel("Portfel:")
         wallet_lbl.setObjectName("lbl_muted")
@@ -88,7 +168,6 @@ class SettingsPage(QWidget):
         wallet_row.addWidget(self.wallet_inp)
         ml.addLayout(wallet_row)
 
-        # Coin
         coin_row = QHBoxLayout()
         coin_lbl = QLabel("Moneta:")
         coin_lbl.setObjectName("lbl_muted")
@@ -111,7 +190,6 @@ class SettingsPage(QWidget):
 
         ml.addWidget(_sep())
 
-        # Buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
 
@@ -147,8 +225,9 @@ class SettingsPage(QWidget):
         self._add_info_row(sl, "Protokół:", "HTTP (tylko LAN, bez internetu)", "#7d8590")
 
         note = QLabel(
-            f"Podczas instalacji agenta na maszynie kopalni podaj adres serwera: "
-            f"<b style='color:#00ff88'>http://{self._ip}:8000</b>"
+            f"Podczas instalacji agenta podaj adres serwera: "
+            f"<b style='color:#00ff88'>http://{self._ip}:8000</b><br>"
+            f"Po formacie i reinstalacji agenta maszyna automatycznie pojawi się ponownie."
         )
         note.setStyleSheet("color:#7d8590;font-size:11px;")
         note.setWordWrap(True)
@@ -164,13 +243,11 @@ class SettingsPage(QWidget):
         gl.setSpacing(10)
 
         steps = [
-            ("1", "Pobierz XMRig na maszynę kopalni", "#7d8590",
-             "https://github.com/xmrig/xmrig/releases"),
-            ("2", f"Skopiuj folder <b>agent/</b> na maszynę kopalni", "#7d8590", ""),
-            ("3", "Zainstaluj Python 3.11+ i uruchom:", "#7d8590", ""),
+            ("1", "Pobierz XMRig na maszynę kopalni"),
+            ("2", "Skopiuj folder <b>agent/</b> na maszynę kopalni"),
+            ("3", "Zainstaluj Python 3.11+ i uruchom instalator:"),
         ]
-
-        for num, text, color, link in steps:
+        for num, text in steps:
             row = QHBoxLayout()
             num_lbl = QLabel(num)
             num_lbl.setStyleSheet(
@@ -180,12 +257,11 @@ class SettingsPage(QWidget):
             num_lbl.setFixedWidth(22)
             num_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             txt_lbl = QLabel(text)
-            txt_lbl.setStyleSheet(f"color:{color};font-size:12px;")
+            txt_lbl.setStyleSheet("color:#7d8590;font-size:12px;")
             row.addWidget(num_lbl)
             row.addWidget(txt_lbl, 1)
             gl.addLayout(row)
 
-        # Command block
         cmd_txt = (
             f"RM_SERVER_URL=http://{self._ip}:8000 \\\n"
             f"RM_POOL={STATE.pool_url or 'pool.supportxmr.com:3333'} \\\n"
@@ -200,14 +276,28 @@ class SettingsPage(QWidget):
         cmd_box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         gl.addWidget(cmd_box)
 
-        # Windows note
         win_note = QLabel(
-            "Windows: skorzystaj z <b>install_windows.bat</b> w folderze <b>agent/</b>"
+            "Windows: uruchom <b>install_windows.bat</b> jako Administrator"
         )
         win_note.setStyleSheet("color:#7d8590;font-size:11px;")
         gl.addWidget(win_note)
 
         root.addWidget(guide_card)
+
+        # ══ Zarządzanie maszynami (uninstall) ═══
+        root.addWidget(_section("🗑  ZARZĄDZANIE MASZYNAMI"))
+
+        self._manage_card = _card()
+        self._manage_card.setObjectName("warn_box")
+        self._manage_layout = QVBoxLayout(self._manage_card)
+        self._manage_layout.setContentsMargins(18, 14, 18, 14)
+        self._manage_layout.setSpacing(0)
+
+        self._no_devices_lbl = QLabel("Brak połączonych maszyn")
+        self._no_devices_lbl.setStyleSheet("color:#484f58;font-size:12px;")
+        self._manage_layout.addWidget(self._no_devices_lbl)
+
+        root.addWidget(self._manage_card)
         root.addStretch()
 
         scroll.setWidget(container)
@@ -258,5 +348,73 @@ class SettingsPage(QWidget):
         self.lbl_mine_status.setText(f"⚡ Komenda wysłana do {n} maszyn")
         self.lbl_mine_status.setStyleSheet("color:#3fb950;font-size:11px;")
 
+    def _uninstall_device(self, device_id: str, display_name: str):
+        dlg = UninstallConfirmDialog(device_id, display_name, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.confirmed:
+            STATE.command(device_id, {"action": "uninstall"})
+
     def refresh(self):
-        pass
+        # Rebuild the manage section with current device list
+        while self._manage_layout.count():
+            item = self._manage_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        devices = STATE.get_devices()
+        if not devices:
+            lbl = QLabel("Brak połączonych maszyn")
+            lbl.setStyleSheet("color:#484f58;font-size:12px;")
+            self._manage_layout.addWidget(lbl)
+            return
+
+        for dev in devices:
+            did = dev["device_id"]
+            hostname = dev.get("hostname") or did
+            custom = dev.get("custom_name") or ""
+            display = custom if custom else hostname
+            model = dev.get("system_model") or ""
+            status = dev.get("status", "offline")
+            online = status == "online"
+
+            row = QHBoxLayout()
+            row.setSpacing(10)
+
+            # Status dot
+            dot = QLabel("●")
+            dot.setStyleSheet(f"color:{'#3fb950' if online else '#484f58'};font-size:10px;")
+            dot.setFixedWidth(14)
+            row.addWidget(dot)
+
+            # Name + model
+            name_col = QVBoxLayout()
+            name_col.setSpacing(1)
+            name_lbl = QLabel(display)
+            name_lbl.setStyleSheet("color:#e6edf3;font-size:12px;font-weight:600;")
+            name_col.addWidget(name_lbl)
+            if model:
+                model_lbl = QLabel(model)
+                model_lbl.setStyleSheet("color:#7d8590;font-size:10px;")
+                name_col.addWidget(model_lbl)
+            row.addLayout(name_col, 1)
+
+            # Uninstall button
+            uninst_btn = QPushButton("⛔  Odinstaluj")
+            uninst_btn.setStyleSheet(
+                "QPushButton{background:transparent;border:1px solid rgba(248,81,73,0.3);"
+                "border-radius:5px;color:#f85149;font-size:11px;padding:4px 10px;}"
+                "QPushButton:hover{background:rgba(248,81,73,0.1);border-color:#f85149;}"
+            )
+            uninst_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            uninst_btn.setToolTip("Wymaga wpisania nazwy maszyny")
+            uninst_btn.clicked.connect(
+                lambda c=False, d=did, n=display: self._uninstall_device(d, n)
+            )
+            row.addWidget(uninst_btn)
+
+            self._manage_layout.addLayout(row)
+
+            # Separator
+            sep = QFrame()
+            sep.setFrameShape(QFrame.Shape.HLine)
+            sep.setStyleSheet("background:#21262d;max-height:1px;")
+            self._manage_layout.addWidget(sep)

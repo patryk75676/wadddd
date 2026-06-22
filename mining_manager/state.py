@@ -1,6 +1,11 @@
+import json
 import threading
 from collections import deque
 from datetime import datetime
+from pathlib import Path
+
+_DATA_DIR = Path.home() / ".mining_manager"
+_NAMES_FILE = _DATA_DIR / "custom_names.json"
 
 
 class AppState:
@@ -12,8 +17,27 @@ class AppState:
         self.pool_url = "pool.supportxmr.com:3333"
         self.wallet = ""
         self.coin = "xmr"
-        # device_ids locked into 24/7 mode (mine forever, survive reboots)
         self.mode_247: set = set()
+        # Custom display names survive server restarts (stored on disk)
+        self.custom_names: dict = self._load_names()
+
+    # ── Persistence ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _load_names() -> dict:
+        try:
+            return json.loads(_NAMES_FILE.read_text())
+        except Exception:
+            return {}
+
+    def _save_names(self):
+        try:
+            _DATA_DIR.mkdir(parents=True, exist_ok=True)
+            _NAMES_FILE.write_text(json.dumps(self.custom_names, ensure_ascii=False))
+        except Exception:
+            pass
+
+    # ── Core state ─────────────────────────────────────────────────────────
 
     def register(self, data: dict):
         with self._lock:
@@ -24,7 +48,6 @@ class AppState:
             self.devices[did].update(data)
             self.devices[did]["status"] = "online"
             self.devices[did]["registered_at"] = datetime.utcnow().isoformat()
-            # If 24/7 mode was set while machine was offline, push it now
             if did in self.mode_247:
                 self.pending[did] = {"action": "set_247", "enabled": True}
 
@@ -61,7 +84,12 @@ class AppState:
                 ls = dev.get("last_seen")
                 if ls and (now - datetime.fromisoformat(ls)).total_seconds() > 60:
                     dev["status"] = "offline"
-                out.append({**dev, "device_id": did, "mode_247": did in self.mode_247})
+                out.append({
+                    **dev,
+                    "device_id": did,
+                    "mode_247": did in self.mode_247,
+                    "custom_name": self.custom_names.get(did, ""),
+                })
             return out
 
     def get_history(self, device_id: str, n: int = 60):
@@ -93,10 +121,23 @@ class AppState:
             self.pending.pop(device_id, None)
             self.mode_247.discard(device_id)
 
-    # ── 24/7 mode ─────────────────────────────────────────────────────────
+    # ── Custom names ───────────────────────────────────────────────────────
+
+    def set_custom_name(self, device_id: str, name: str):
+        with self._lock:
+            if name:
+                self.custom_names[device_id] = name
+            else:
+                self.custom_names.pop(device_id, None)
+            self._save_names()
+
+    def get_display_name(self, device_id: str, fallback: str) -> str:
+        with self._lock:
+            return self.custom_names.get(device_id) or fallback
+
+    # ── 24/7 mode ──────────────────────────────────────────────────────────
 
     def set_247(self, device_id: str, enabled: bool):
-        """Enable/disable 24/7 mining on a device (or '_all' for broadcast)."""
         with self._lock:
             if device_id == "_all":
                 targets = list(self.devices.keys())

