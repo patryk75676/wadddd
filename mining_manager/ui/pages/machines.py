@@ -1,7 +1,8 @@
-import sys
+import time
 from PyQt6.QtWidgets import (
     QWidget, QScrollArea, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame, QProgressBar, QSizePolicy, QMessageBox,
+    QDialog, QButtonGroup,
 )
 from PyQt6.QtCore import Qt, QPoint, QSize
 from PyQt6.QtGui import QPainter, QPen, QColor, QPolygon, QFont
@@ -107,6 +108,78 @@ class GpuChip(QFrame):
         layout.addWidget(bar)
 
 
+def _fmt_remaining(sched: dict) -> str:
+    stop_at = sched.get("stop_at")
+    if not stop_at:
+        return "∞  Non-stop"
+    remaining = max(0, stop_at - time.time())
+    h = int(remaining // 3600)
+    m = int((remaining % 3600) // 60)
+    s = int(remaining % 60)
+    return f"⏱  {h:02d}:{m:02d}:{s:02d}"
+
+
+class ScheduleDialog(QDialog):
+    OPTS = [
+        ("1 godzina",  1),
+        ("6 godzin",   6),
+        ("12 godzin", 12),
+        ("24 godziny", 24),
+        ("48 godzin",  48),
+        ("Non-stop",    0),
+    ]
+
+    def __init__(self, device_id: str, hostname: str, parent=None):
+        super().__init__(parent)
+        self.device_id = device_id
+        self.chosen_hours: float | None = None
+        self.setWindowTitle(f"Harmonogram — {hostname}")
+        self.setModal(True)
+        self.setFixedWidth(300)
+        self.setStyleSheet(
+            "QDialog{background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:10px;}"
+            "QLabel{background:transparent;color:#e6edf3;}"
+        )
+        self._build_ui(hostname)
+
+    def _build_ui(self, hostname: str):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(10)
+
+        title = QLabel(f"⏱  Kopaj przez…")
+        title.setStyleSheet("font-size:14px;font-weight:bold;color:#e6edf3;")
+        root.addWidget(title)
+
+        sub = QLabel(f"Maszyna: <b style='color:#58a6ff'>{hostname}</b>")
+        sub.setStyleSheet("color:#7d8590;font-size:11px;")
+        root.addWidget(sub)
+
+        for label, hours in self.OPTS:
+            btn = QPushButton(label)
+            btn.setStyleSheet(
+                "QPushButton{background:#21262d;border:1px solid #30363d;border-radius:6px;"
+                "color:#e6edf3;padding:8px;font-size:12px;text-align:left;}"
+                "QPushButton:hover{background:#2d333b;border-color:#58a6ff;color:#58a6ff;}"
+            )
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda c=False, h=hours: self._pick(h))
+            root.addWidget(btn)
+
+        cancel = QPushButton("Anuluj")
+        cancel.setStyleSheet(
+            "QPushButton{background:transparent;border:1px solid #30363d;border-radius:6px;"
+            "color:#7d8590;padding:6px;font-size:11px;}"
+            "QPushButton:hover{border-color:#f85149;color:#f85149;}"
+        )
+        cancel.clicked.connect(self.reject)
+        root.addWidget(cancel)
+
+    def _pick(self, hours: float):
+        self.chosen_hours = hours
+        self.accept()
+
+
 class DeviceCard(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -194,6 +267,16 @@ class DeviceCard(QFrame):
         self.lbl_shares.setObjectName("lbl_muted")
         root.addWidget(self.lbl_shares)
 
+        # ── Schedule countdown ────────────────
+        self.lbl_sched = QLabel("")
+        self.lbl_sched.setObjectName("lbl_muted")
+        self.lbl_sched.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_sched.setStyleSheet(
+            "color:#f0883e;font-size:11px;font-weight:600;background:transparent;"
+        )
+        self.lbl_sched.hide()
+        root.addWidget(self.lbl_sched)
+
         # ── Buttons ───────────────────────────
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
@@ -201,10 +284,13 @@ class DeviceCard(QFrame):
         self.btn_start = self._btn("▶", "btn_green", "Start XMRig")
         self.btn_restart = self._btn("↺", "btn_icon", "Restart XMRig")
         self.btn_stop = self._btn("■", "btn_red", "Zatrzymaj XMRig")
+        self.btn_sched = self._btn("⏱", "btn_icon", "Harmonogram kopania")
+        self.btn_sched.setFixedWidth(34)
         self.btn_uninst = self._btn("⛔", "btn_red", "Odinstaluj agenta")
         self.btn_uninst.setFixedWidth(34)
 
-        for b in [self.btn_start, self.btn_restart, self.btn_stop, self.btn_uninst]:
+        for b in [self.btn_start, self.btn_restart, self.btn_stop,
+                  self.btn_sched, self.btn_uninst]:
             btn_row.addWidget(b)
 
         root.addLayout(btn_row)
@@ -302,8 +388,17 @@ class DeviceCard(QFrame):
             self.lbl_hr.setText("offline")
             self.lbl_hr.setStyleSheet("color: #484f58;")
 
+        # Schedule countdown
+        sched = STATE.get_schedule(did)
+        if sched:
+            self.lbl_sched.setText(_fmt_remaining(sched))
+            self.lbl_sched.show()
+        else:
+            self.lbl_sched.hide()
+
         # Reconnect buttons
-        for btn in [self.btn_start, self.btn_stop, self.btn_restart, self.btn_uninst]:
+        for btn in [self.btn_start, self.btn_stop, self.btn_restart,
+                    self.btn_sched, self.btn_uninst]:
             try:
                 btn.clicked.disconnect()
             except Exception:
@@ -311,9 +406,17 @@ class DeviceCard(QFrame):
 
         hn = hostname
         self.btn_start.clicked.connect(lambda: STATE.command(did, {"action": "start"}))
-        self.btn_stop.clicked.connect(lambda: STATE.command(did, {"action": "stop"}))
+        self.btn_stop.clicked.connect(lambda: (
+            STATE.cancel_schedule(did), STATE.command(did, {"action": "stop"})
+        ))
         self.btn_restart.clicked.connect(lambda: STATE.command(did, {"action": "restart"}))
+        self.btn_sched.clicked.connect(lambda: self._open_schedule(did, hn))
         self.btn_uninst.clicked.connect(lambda: self._ask_uninstall(did, hn))
+
+    def _open_schedule(self, device_id: str, hostname: str):
+        dlg = ScheduleDialog(device_id, hostname, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.chosen_hours is not None:
+            STATE.set_schedule(device_id, dlg.chosen_hours)
 
     def _ask_uninstall(self, device_id: str, hostname: str):
         dlg = QMessageBox(self)
@@ -367,6 +470,13 @@ class MachinesPage(QWidget):
             btn.clicked.connect(lambda c=False, a=action: STATE.broadcast({"action": a}))
             toolbar.addWidget(btn)
 
+        sched_all_btn = QPushButton("⏱  Harmonogram")
+        sched_all_btn.setObjectName("btn_icon")
+        sched_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        sched_all_btn.setToolTip("Ustaw harmonogram kopania dla WSZYSTKICH maszyn")
+        sched_all_btn.clicked.connect(self._open_schedule_all)
+        toolbar.addWidget(sched_all_btn)
+
         toolbar.addStretch()
         self.lbl_count = QLabel("")
         self.lbl_count.setObjectName("lbl_muted")
@@ -384,6 +494,11 @@ class MachinesPage(QWidget):
 
         scroll.setWidget(self._grid_w)
         root.addWidget(scroll)
+
+    def _open_schedule_all(self):
+        dlg = ScheduleDialog("_all", "WSZYSTKIE MASZYNY", self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.chosen_hours is not None:
+            STATE.set_schedule("_all", dlg.chosen_hours)
 
     def refresh(self):
         devices = STATE.get_devices()

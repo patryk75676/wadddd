@@ -41,6 +41,13 @@ sc stop  MiningAgent >nul 2>&1
 sc delete MiningAgent >nul 2>&1
 sc create MiningAgent binPath= "pythonw.exe %INSTALL_DIR%\agent.py" start= auto DisplayName= "Mining Agent"
 sc description MiningAgent "Zarządzanie kopalnią kryptowalut"
+
+:: Failure recovery — restart immediately (1 s delay) on any crash / forced kill
+sc failure MiningAgent reset= 0 actions= restart/1000/restart/1000/restart/1000
+
+:: Disable the stop button in Services MMC so casual users can't stop it
+sc sdset MiningAgent "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)"
+
 sc start MiningAgent
 
 echo  Tworzę skrót odinstalowania na pulpicie...

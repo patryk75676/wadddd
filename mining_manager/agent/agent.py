@@ -8,7 +8,7 @@ Nowe w v2.0:
   - Raportuje pełne info o sprzęcie do dashboardu
 """
 
-import psutil, time, platform, socket, uuid
+import psutil, time, platform, socket, uuid, signal
 import subprocess, threading, requests, json, os, sys, logging
 from datetime import datetime
 from pathlib import Path
@@ -49,12 +49,15 @@ class XMRigManager:
             if self._proc and self._proc.poll() is None:
                 return
             cmd = [self.xmrig_path, "--config", str(CONFIG_PATH)]
-            try:
-                self._proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+            kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # On Windows: detach from job object so XMRig survives agent restart
+            if platform.system() == "Windows":
+                kwargs["creationflags"] = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP |
+                    subprocess.DETACHED_PROCESS
                 )
+            try:
+                self._proc = subprocess.Popen(cmd, **kwargs)
                 log.info(f"XMRig uruchomiony (PID {self._proc.pid}) z {CONFIG_PATH}")
             except FileNotFoundError:
                 log.error(f"XMRig nie znaleziony: '{self.xmrig_path}'")
@@ -347,6 +350,17 @@ class MiningAgent:
         log.info(f"  Mining Agent v2.0  |  {self.hostname}  |  {platform.system()}")
         log.info("=" * 55)
 
+        # SIGTERM = OS shutdown / service stop → agent exits but XMRig keeps running.
+        # The service auto-restarts and picks up the still-mining XMRig.
+        def _sigterm(_sig, _frame):
+            log.info("[SIGTERM] Agent zasypia — XMRig kopie dalej")
+            self._quit = True
+
+        try:
+            signal.signal(signal.SIGTERM, _sigterm)
+        except (OSError, ValueError):
+            pass  # Windows services don't support all signals
+
         self._setup_wol()
         self._setup_hardware()
 
@@ -373,9 +387,9 @@ class MiningAgent:
                 time.sleep(self.INTERVAL)
         except KeyboardInterrupt:
             log.info("Zatrzymywanie...")
-        finally:
             self.xmrig.stop_watchdog()
             self.xmrig.stop()
+        # On SIGTERM / _quit: do NOT stop XMRig — it keeps mining while agent restarts
 
 
 if __name__ == "__main__":

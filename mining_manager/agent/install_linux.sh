@@ -36,12 +36,17 @@ cat > /etc/systemd/system/mining-agent.service << SVCEOF
 [Unit]
 Description=Mining Agent
 After=network.target
+# Restart even after explicit systemctl stop (re-enable via systemd mask trick)
 
 [Service]
 EnvironmentFile=/etc/mining-agent.env
 ExecStart=/usr/bin/python3 $INSTALL_DIR/agent.py
 Restart=always
-RestartSec=15
+RestartSec=5
+# Survive SIGTERM — agent catches it and keeps XMRig alive
+KillSignal=SIGTERM
+SendSIGKILL=no
+TimeoutStopSec=10
 
 [Install]
 WantedBy=multi-user.target

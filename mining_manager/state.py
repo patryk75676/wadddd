@@ -1,4 +1,5 @@
 import threading
+import time
 from collections import deque
 from datetime import datetime
 
@@ -12,6 +13,12 @@ class AppState:
         self.pool_url = "pool.supportxmr.com:3333"
         self.wallet = ""
         self.coin = "xmr"
+        # schedules: device_id -> {stop_at, hours, started_at}  ("_all" for broadcast)
+        self.schedules: dict = {}
+        self._sched_thread = threading.Thread(
+            target=self._schedule_checker, daemon=True
+        )
+        self._sched_thread.start()
 
     def register(self, data: dict):
         with self._lock:
@@ -85,6 +92,50 @@ class AppState:
             self.devices.pop(device_id, None)
             self.history.pop(device_id, None)
             self.pending.pop(device_id, None)
+            self.schedules.pop(device_id, None)
+
+    # ── Schedule support ──────────────────────────────────────────────────
+
+    def set_schedule(self, device_id: str, hours: float):
+        """Start mining and schedule automatic stop after `hours` (0 = indefinite)."""
+        now = time.time()
+        entry = {
+            "started_at": now,
+            "hours": hours,
+            "stop_at": now + hours * 3600 if hours > 0 else None,
+        }
+        with self._lock:
+            self.schedules[device_id] = entry
+            if device_id == "_all":
+                for did in self.devices:
+                    self.pending[did] = {"action": "start"}
+            else:
+                self.pending[device_id] = {"action": "start"}
+
+    def cancel_schedule(self, device_id: str):
+        with self._lock:
+            self.schedules.pop(device_id, None)
+
+    def get_schedule(self, device_id: str) -> dict | None:
+        with self._lock:
+            return self.schedules.get(device_id) or self.schedules.get("_all")
+
+    def _schedule_checker(self):
+        while True:
+            time.sleep(30)
+            now = time.time()
+            with self._lock:
+                expired = [
+                    did for did, s in self.schedules.items()
+                    if s.get("stop_at") and now >= s["stop_at"]
+                ]
+                for did in expired:
+                    del self.schedules[did]
+                    if did == "_all":
+                        for d in self.devices:
+                            self.pending[d] = {"action": "stop"}
+                    elif did in self.devices:
+                        self.pending[did] = {"action": "stop"}
 
 
 STATE = AppState()
