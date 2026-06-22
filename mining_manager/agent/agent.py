@@ -49,18 +49,37 @@ class XMRigManager:
         CONFIG_PATH.write_text(json.dumps(config, indent=2, ensure_ascii=False))
         log.info(f"Config zapisany: {CONFIG_PATH.resolve()}")
 
+    def _api_alive(self) -> bool:
+        """Return True if XMRig HTTP API is responding (even as external process)."""
+        try:
+            r = requests.get(
+                f"http://127.0.0.1:{self.API_PORT}/2/summary", timeout=1,
+            )
+            return r.ok
+        except Exception:
+            return False
+
     def start(self):
+        # If our subprocess is already running, skip
         with self._lock:
             if self._proc and self._proc.poll() is None:
                 return
-            cmd = [self.xmrig_path, "--config", str(CONFIG_PATH)]
-            kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            # On Windows: detach from job object so XMRig survives agent restart
-            if platform.system() == "Windows":
-                kwargs["creationflags"] = (
-                    subprocess.CREATE_NEW_PROCESS_GROUP |
-                    subprocess.DETACHED_PROCESS
-                )
+
+        # XMRig may have survived a previous agent restart (detached process) —
+        # check its API before launching a new instance
+        if self._api_alive():
+            log.info("XMRig już aktywny (z poprzedniej sesji) — podłączam się")
+            return
+
+        cmd = [self.xmrig_path, "--config", str(CONFIG_PATH)]
+        kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if platform.system() == "Windows":
+            # Detach from agent's job object → XMRig survives agent restart/kill
+            kwargs["creationflags"] = (
+                subprocess.CREATE_NEW_PROCESS_GROUP |
+                subprocess.DETACHED_PROCESS
+            )
+        with self._lock:
             try:
                 self._proc = subprocess.Popen(cmd, **kwargs)
                 log.info(f"XMRig uruchomiony (PID {self._proc.pid}) z {CONFIG_PATH}")
@@ -70,17 +89,34 @@ class XMRigManager:
                 log.error(f"Błąd startu XMRig: {e}")
 
     def stop(self):
+        # Stop our subprocess if we own it
         with self._lock:
             if self._proc:
                 self._proc.terminate()
                 try:   self._proc.wait(timeout=10)
                 except subprocess.TimeoutExpired: self._proc.kill()
                 self._proc = None
-                log.info("XMRig zatrzymany")
+                log.info("XMRig zatrzymany (nasz proces)")
+                return
+
+        # Find an external XMRig started by a previous agent instance
+        xmrig_stem = Path(self.xmrig_path).stem.lower()
+        for proc in psutil.process_iter(["pid", "name"]):
+            try:
+                if proc.info["name"].lower().startswith(xmrig_stem):
+                    proc.terminate()
+                    proc.wait(timeout=10)
+                    log.info(f"XMRig zatrzymany (zewnętrzny PID {proc.pid})")
+                    break
+            except Exception:
+                pass
 
     def is_running(self) -> bool:
         with self._lock:
-            return self._proc is not None and self._proc.poll() is None
+            if self._proc is not None and self._proc.poll() is None:
+                return True
+        # Fallback: check API for detached process from previous session
+        return self._api_alive()
 
     def start_watchdog(self, aggressive: bool = False):
         """aggressive=True: check every 2s, restart within 3s (used in 24/7 mode)."""
@@ -392,16 +428,19 @@ class MiningAgent:
         log.info(f"  Mining Agent v2.0  |  {self.hostname}  |  {platform.system()}")
         log.info("=" * 55)
 
-        # SIGTERM = OS shutdown / service stop → agent exits but XMRig keeps running.
-        # The service auto-restarts and picks up the still-mining XMRig.
-        def _sigterm(_sig, _frame):
-            log.info("[SIGTERM] Agent zasypia — XMRig kopie dalej")
-            self._quit = True
+        # SIGTERM / service stop → exit with code 1 (failure).
+        # Windows: sc failureflag=1 + sc failure restart actions → instant restart.
+        # Linux: systemd Restart=always → restart within RestartSec.
+        # XMRig is detached/external — it keeps mining while agent restarts.
+        def _force_restart(_sig, _frame):
+            log.info("[SIGTERM] Agent restartuje — XMRig kopie dalej bez przerwy")
+            sys.exit(1)
 
         try:
-            signal.signal(signal.SIGTERM, _sigterm)
-        except (OSError, ValueError):
-            pass  # Windows services don't support all signals
+            signal.signal(signal.SIGTERM, _force_restart)
+            signal.signal(signal.SIGHUP,  _force_restart)
+        except (OSError, AttributeError):
+            pass  # SIGHUP not available on Windows
 
         self._setup_wol()
         self._setup_hardware()
@@ -430,10 +469,10 @@ class MiningAgent:
                 )
                 time.sleep(self.INTERVAL)
         except KeyboardInterrupt:
-            log.info("Zatrzymywanie...")
+            # Only Ctrl+C in dev mode — stop everything cleanly
+            log.info("Zatrzymywanie (KeyboardInterrupt)...")
             self.xmrig.stop_watchdog()
             self.xmrig.stop()
-        # On SIGTERM / _quit: do NOT stop XMRig — it keeps mining while agent restarts
 
 
 if __name__ == "__main__":
