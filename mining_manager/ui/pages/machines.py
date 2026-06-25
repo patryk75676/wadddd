@@ -1,0 +1,554 @@
+from PyQt6.QtWidgets import (
+    QWidget, QScrollArea, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QFrame, QProgressBar, QSizePolicy,
+    QDialog, QLineEdit,
+)
+from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtGui import QPainter, QPen, QColor, QPolygon
+
+from state import STATE
+from ui.flow_layout import FlowLayout
+
+
+def fmt_hr(hs: float) -> str:
+    if not hs:
+        return "0 H/s"
+    if hs >= 1e9:
+        return f"{hs / 1e9:.2f} GH/s"
+    if hs >= 1e6:
+        return f"{hs / 1e6:.2f} MH/s"
+    if hs >= 1e3:
+        return f"{hs / 1e3:.1f} kH/s"
+    return f"{hs:.1f} H/s"
+
+
+class SparklineWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.data: list[float] = []
+        self.setMinimumHeight(40)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+    def set_data(self, data: list[float]):
+        self.data = data[-80:]
+        self.update()
+
+    def paintEvent(self, event):
+        if len(self.data) < 2:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        mn, mx = min(self.data), max(self.data)
+        if mx == mn:
+            mx = mn + 1
+
+        def pt(i, v):
+            x = int(i / (len(self.data) - 1) * (w - 2)) + 1
+            y = int((1 - (v - mn) / (mx - mn)) * (h - 8)) + 4
+            return QPoint(x, y)
+
+        pts = [pt(i, v) for i, v in enumerate(self.data)]
+
+        fill = QPolygon([QPoint(1, h - 1)] + pts + [QPoint(w - 1, h - 1)])
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0, 255, 136, 18))
+        p.drawPolygon(fill)
+
+        pen = QPen(QColor("#00ff88"), 1.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        for i in range(1, len(pts)):
+            p.drawLine(pts[i - 1], pts[i])
+
+        if pts:
+            p.setBrush(QColor("#00ff88"))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(pts[-1], 3, 3)
+
+
+class GpuChip(QFrame):
+    def __init__(self, gpu: dict, parent=None):
+        super().__init__(parent)
+        self.setObjectName("gpu_chip")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(3)
+
+        name = (gpu.get("name") or "GPU")[:18]
+        name_lbl = QLabel(name)
+        name_lbl.setStyleSheet(
+            "color:#58a6ff;font-size:10px;font-weight:bold;"
+            "background:transparent;border:none;"
+        )
+        layout.addWidget(name_lbl)
+
+        load = float(gpu.get("load") or 0)
+        temp = int(gpu.get("temp_c") or 0)
+        info = QLabel(f"{load:.0f}%  ·  {temp}°C")
+        info.setStyleSheet(
+            "color:#7d8590;font-size:10px;background:transparent;border:none;"
+        )
+        layout.addWidget(info)
+
+        bar = QProgressBar()
+        bar.setMaximum(100)
+        bar.setValue(int(load))
+        bar.setTextVisible(False)
+        bar.setFixedHeight(3)
+        color = "#f85149" if temp > 82 else "#f0883e" if temp > 70 else "#3fb950"
+        bar.setStyleSheet(
+            f"QProgressBar{{background:#21262d;border:none;border-radius:1px;}}"
+            f"QProgressBar::chunk{{background:{color};border-radius:1px;}}"
+        )
+        layout.addWidget(bar)
+
+
+class RenameDialog(QDialog):
+    def __init__(self, current: str, parent=None):
+        super().__init__(parent)
+        self.new_name: str | None = None
+        self.setWindowTitle("Zmień nazwę maszyny")
+        self.setModal(True)
+        self.setFixedWidth(320)
+        self.setStyleSheet(
+            "QDialog{background:#161b22;border:1px solid #30363d;border-radius:10px;}"
+            "QLabel{background:transparent;}"
+        )
+        self._build(current)
+
+    def _build(self, current: str):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(12)
+
+        title = QLabel("✏  Nazwa wyświetlana")
+        title.setStyleSheet("color:#e6edf3;font-size:13px;font-weight:bold;")
+        root.addWidget(title)
+
+        sub = QLabel("Własna nazwa zastępuje hostname w dashboardzie.\nPo formacie i reinstalacji agenta nazwa zostaje.")
+        sub.setStyleSheet("color:#7d8590;font-size:11px;")
+        sub.setWordWrap(True)
+        root.addWidget(sub)
+
+        self.inp = QLineEdit(current)
+        self.inp.setPlaceholderText("np. Lenovo Legion 1 · Górna półka")
+        self.inp.setStyleSheet(
+            "background:#0d1117;border:1px solid #30363d;border-radius:6px;"
+            "color:#e6edf3;padding:8px 12px;font-size:12px;"
+        )
+        self.inp.returnPressed.connect(self._save)
+        self.inp.selectAll()
+        root.addWidget(self.inp)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        save_btn = QPushButton("Zapisz")
+        save_btn.setStyleSheet(
+            "background:#3fb950;border:none;border-radius:6px;"
+            "color:#0d1117;font-weight:bold;padding:8px 18px;"
+        )
+        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_btn.clicked.connect(self._save)
+
+        clear_btn = QPushButton("Usuń nazwę")
+        clear_btn.setStyleSheet(
+            "background:transparent;border:1px solid #30363d;border-radius:6px;"
+            "color:#7d8590;padding:8px 14px;"
+        )
+        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_btn.clicked.connect(self._clear)
+
+        cancel_btn = QPushButton("Anuluj")
+        cancel_btn.setStyleSheet(
+            "background:transparent;border:1px solid #30363d;border-radius:6px;"
+            "color:#7d8590;padding:8px 14px;"
+        )
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel_btn.clicked.connect(self.reject)
+
+        btn_row.addWidget(save_btn)
+        btn_row.addWidget(clear_btn)
+        btn_row.addWidget(cancel_btn)
+        root.addLayout(btn_row)
+
+    def _save(self):
+        self.new_name = self.inp.text().strip()
+        self.accept()
+
+    def _clear(self):
+        self.new_name = ""
+        self.accept()
+
+
+class DeviceCard(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("device_card")
+        self.device_id: str | None = None
+        self._is_247 = False
+        self.setFixedWidth(354)
+        self._build_ui()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(8)
+
+        # ── Header row ────────────────────────
+        hdr = QHBoxLayout()
+        hdr.setSpacing(5)
+
+        self.lbl_host = QLabel("—")
+        self.lbl_host.setObjectName("lbl_hostname")
+
+        # Rename button — small pencil icon
+        self.btn_rename = QPushButton("✏")
+        self.btn_rename.setFixedSize(22, 22)
+        self.btn_rename.setToolTip("Zmień nazwę maszyny")
+        self.btn_rename.setStyleSheet(
+            "QPushButton{background:transparent;border:none;color:#484f58;font-size:11px;padding:0;}"
+            "QPushButton:hover{color:#7d8590;}"
+        )
+        self.btn_rename.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.lbl_247 = QLabel("24/7")
+        self.lbl_247.setFixedWidth(34)
+        self.lbl_247.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_247.setStyleSheet(
+            "background:#f0883e;color:#0d1117;border-radius:4px;"
+            "font-size:9px;font-weight:bold;padding:2px 4px;"
+        )
+        self.lbl_247.hide()
+
+        self.lbl_status = QLabel("OFF")
+        self.lbl_status.setObjectName("badge_off")
+        self.lbl_status.setFixedWidth(38)
+        self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        hdr.addWidget(self.lbl_host, 1)
+        hdr.addWidget(self.btn_rename)
+        hdr.addWidget(self.lbl_247)
+        hdr.addWidget(self.lbl_status)
+        root.addLayout(hdr)
+
+        # ── System model + specs ──────────────
+        self.lbl_model = QLabel("")
+        self.lbl_model.setStyleSheet(
+            "color:#58a6ff;font-size:11px;font-weight:600;background:transparent;"
+        )
+        self.lbl_model.hide()
+        root.addWidget(self.lbl_model)
+
+        self.lbl_sub = QLabel("—")
+        self.lbl_sub.setObjectName("lbl_sub")
+        root.addWidget(self.lbl_sub)
+
+        # ── Hashrate ──────────────────────────
+        self.lbl_hr = QLabel("0 H/s")
+        self.lbl_hr.setObjectName("val_xl")
+        self.lbl_hr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(self.lbl_hr)
+
+        self.lbl_hr_sub = QLabel("1m: —  ·  15m: —")
+        self.lbl_hr_sub.setObjectName("lbl_muted")
+        self.lbl_hr_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(self.lbl_hr_sub)
+
+        # ── CPU / RAM ─────────────────────────
+        metric_box = QFrame()
+        metric_box.setObjectName("metric_box")
+        mb_layout = QVBoxLayout(metric_box)
+        mb_layout.setContentsMargins(10, 8, 10, 8)
+        mb_layout.setSpacing(7)
+
+        self.cpu_bar = self._bar("cpu_bar")
+        self.ram_bar = self._bar("ram_bar")
+        self.lbl_cpu = QLabel("0%")
+        self.lbl_cpu.setObjectName("lbl_muted")
+        self.lbl_cpu.setFixedWidth(32)
+        self.lbl_cpu.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.lbl_ram = QLabel("0%")
+        self.lbl_ram.setObjectName("lbl_muted")
+        self.lbl_ram.setFixedWidth(32)
+        self.lbl_ram.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        for bar, pct_lbl, txt in [(self.cpu_bar, self.lbl_cpu, "CPU"),
+                                   (self.ram_bar, self.lbl_ram, "RAM")]:
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            l = QLabel(txt)
+            l.setObjectName("lbl_muted")
+            l.setFixedWidth(26)
+            row.addWidget(l)
+            row.addWidget(bar, 1)
+            row.addWidget(pct_lbl)
+            mb_layout.addLayout(row)
+
+        root.addWidget(metric_box)
+
+        # ── GPU row ───────────────────────────
+        self.gpu_row = QHBoxLayout()
+        self.gpu_row.setSpacing(5)
+        root.addLayout(self.gpu_row)
+
+        # ── Sparkline ─────────────────────────
+        self.sparkline = SparklineWidget()
+        root.addWidget(self.sparkline)
+
+        # ── Shares ────────────────────────────
+        self.lbl_shares = QLabel("pool: —")
+        self.lbl_shares.setObjectName("lbl_muted")
+        root.addWidget(self.lbl_shares)
+
+        # ── Buttons ───────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(4)
+
+        self.btn_start   = self._btn("▶",    "btn_green", "Start XMRig")
+        self.btn_restart = self._btn("↺",    "btn_icon",  "Restart XMRig")
+        self.btn_stop    = self._btn("■",    "btn_red",   "Zatrzymaj XMRig")
+        self.btn_247     = self._btn("24/7", "btn_icon",  "Tryb 24/7 — kopaj nieustannie, nawet po wyłączeniu / restarcie")
+        self.btn_247.setFixedWidth(42)
+
+        for b in [self.btn_start, self.btn_restart, self.btn_stop, self.btn_247]:
+            btn_row.addWidget(b)
+
+        root.addLayout(btn_row)
+
+    @staticmethod
+    def _bar(name: str) -> QProgressBar:
+        bar = QProgressBar()
+        bar.setObjectName(name)
+        bar.setMaximum(100)
+        bar.setFixedHeight(5)
+        bar.setTextVisible(False)
+        return bar
+
+    @staticmethod
+    def _btn(text: str, obj_name: str, tip: str = "") -> QPushButton:
+        b = QPushButton(text)
+        b.setObjectName(obj_name)
+        b.setToolTip(tip)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        return b
+
+    def _set_status_badge(self, online: bool):
+        obj = "badge_on" if online else "badge_off"
+        txt = "ON" if online else "OFF"
+        self.lbl_status.setObjectName(obj)
+        self.lbl_status.setText(txt)
+        self.lbl_status.style().unpolish(self.lbl_status)
+        self.lbl_status.style().polish(self.lbl_status)
+
+    def _set_card_border(self, status: str, is_247: bool):
+        prop = "247" if is_247 else status
+        self.setProperty("status", prop)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def _set_247_style(self, active: bool):
+        self._is_247 = active
+        if active:
+            self.lbl_247.show()
+            self.btn_247.setStyleSheet(
+                "QPushButton{background:#f0883e;border:none;border-radius:5px;"
+                "color:#0d1117;font-weight:bold;font-size:9px;padding:4px 6px;}"
+                "QPushButton:hover{background:#e07830;}"
+            )
+        else:
+            self.lbl_247.hide()
+            self.btn_247.setStyleSheet("")
+            self.btn_247.setObjectName("btn_icon")
+            self.btn_247.style().unpolish(self.btn_247)
+            self.btn_247.style().polish(self.btn_247)
+
+    def update_device(self, dev: dict):
+        did = dev["device_id"]
+        self.device_id = did
+        status = dev.get("status", "offline")
+        online = status == "online"
+        is_247 = dev.get("mode_247", False) or STATE.get_247(did)
+
+        hostname = dev.get("hostname") or did
+        custom = dev.get("custom_name") or ""
+        display_name = custom if custom else hostname
+        self.lbl_host.setText(f"🖥  {display_name}")
+
+        # System model line
+        model = dev.get("system_model") or ""
+        if model:
+            self.lbl_model.setText(f"   {model}")
+            self.lbl_model.show()
+        else:
+            self.lbl_model.hide()
+
+        platform_name = dev.get("platform") or ""
+        cpu_c = dev.get("cpu_count") or "?"
+        ram = dev.get("ram_gb") or ""
+        self.lbl_sub.setText(
+            f"{platform_name}  ·  {cpu_c}× CPU"
+            + (f"  ·  {ram} GB RAM" if ram else "")
+        )
+        self._set_status_badge(online)
+        self._set_card_border(status, is_247)
+        self._set_247_style(is_247)
+
+        if online:
+            mining = dev.get("mining") or {}
+            hw = dev.get("hardware") or {}
+
+            hr = mining.get("hashrate_hs") or 0
+            hr1 = mining.get("hashrate_1m") or 0
+            hr15 = mining.get("hashrate_15m") or 0
+            self.lbl_hr.setText(fmt_hr(hr))
+            self.lbl_hr.setStyleSheet("")
+            self.lbl_hr_sub.setText(f"1m: {fmt_hr(hr1)}  ·  15m: {fmt_hr(hr15)}")
+
+            cpu = float(hw.get("cpu_percent") or 0)
+            ram_pct = float(hw.get("ram_percent") or 0)
+            self.cpu_bar.setValue(int(cpu))
+            self.ram_bar.setValue(int(ram_pct))
+            self.lbl_cpu.setText(f"{cpu:.0f}%")
+            self.lbl_ram.setText(f"{ram_pct:.0f}%")
+
+            while self.gpu_row.count():
+                item = self.gpu_row.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            gpus = hw.get("gpus") or []
+            for gpu in gpus[:4]:
+                self.gpu_row.addWidget(GpuChip(gpu))
+            if not gpus:
+                self.gpu_row.addStretch()
+
+            hist = STATE.get_history(did, 80)
+            self.sparkline.set_data([h["hr"] for h in hist])
+
+            acc = mining.get("accepted") or 0
+            rej = mining.get("rejected") or 0
+            pool = (mining.get("pool") or "").split(".")[0] or "—"
+            algo = mining.get("algo") or ""
+            self.lbl_shares.setText(
+                f"✓ {acc}  ✗ {rej}  ·  {pool}"
+                + (f"  ·  {algo}" if algo else "")
+            )
+        else:
+            self.lbl_hr.setText("offline")
+            self.lbl_hr.setStyleSheet("color: #484f58;")
+
+        # Reconnect buttons
+        for btn in [self.btn_start, self.btn_stop, self.btn_restart,
+                    self.btn_247, self.btn_rename]:
+            try:
+                btn.clicked.disconnect()
+            except Exception:
+                pass
+
+        self.btn_start.clicked.connect(lambda: STATE.command(did, {"action": "start"}))
+        self.btn_stop.clicked.connect(lambda: STATE.command(did, {"action": "stop"}))
+        self.btn_restart.clicked.connect(lambda: STATE.command(did, {"action": "restart"}))
+        self.btn_247.clicked.connect(lambda: self._toggle_247(did))
+        self.btn_rename.clicked.connect(lambda: self._open_rename(did, custom or hostname))
+
+    def _toggle_247(self, device_id: str):
+        currently = STATE.get_247(device_id)
+        STATE.set_247(device_id, not currently)
+        self._set_247_style(not currently)
+
+    def _open_rename(self, device_id: str, current: str):
+        dlg = RenameDialog(current, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.new_name is not None:
+            STATE.set_custom_name(device_id, dlg.new_name)
+
+
+class MachinesPage(QWidget):
+    def __init__(self):
+        super().__init__()
+        self._cards: dict[str, DeviceCard] = {}
+        self._build_ui()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 16, 20, 20)
+        root.setSpacing(12)
+
+        # ── Broadcast toolbar ─────────────────
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(6)
+
+        lbl = QLabel("BROADCAST →")
+        lbl.setObjectName("lbl_muted")
+        toolbar.addWidget(lbl)
+
+        for label, action, obj in [
+            ("▶  Start wszystkie", "start",   "btn_green"),
+            ("■  Stop",            "stop",    "btn_red"),
+            ("↺  Restart",         "restart", ""),
+        ]:
+            btn = QPushButton(label)
+            btn.setObjectName(obj)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda c=False, a=action: STATE.broadcast({"action": a}))
+            toolbar.addWidget(btn)
+
+        btn_247_all = QPushButton("🔒  24/7 WSZYSTKIE")
+        btn_247_all.setObjectName("btn_icon")
+        btn_247_all.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_247_all.setToolTip("Włącz tryb 24/7 na wszystkich maszynach")
+        btn_247_all.setStyleSheet(
+            "QPushButton{background:#2d1f0a;border:1px solid #f0883e;border-radius:6px;"
+            "color:#f0883e;font-weight:bold;padding:5px 12px;}"
+            "QPushButton:hover{background:#3d2b0f;}"
+        )
+        btn_247_all.clicked.connect(lambda: STATE.set_247("_all", True))
+        toolbar.addWidget(btn_247_all)
+
+        toolbar.addStretch()
+        self.lbl_count = QLabel("")
+        self.lbl_count.setObjectName("lbl_muted")
+        toolbar.addWidget(self.lbl_count)
+        root.addLayout(toolbar)
+
+        # ── Scroll area ───────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._grid_w = QWidget()
+        self._grid_w.setStyleSheet("background:transparent;")
+        self._flow = FlowLayout(self._grid_w, h_spacing=10, v_spacing=10)
+
+        scroll.setWidget(self._grid_w)
+        root.addWidget(scroll)
+
+    def refresh(self):
+        devices = STATE.get_devices()
+        seen = set()
+
+        for dev in devices:
+            did = dev["device_id"]
+            seen.add(did)
+            if did not in self._cards:
+                card = DeviceCard()
+                self._cards[did] = card
+                self._flow.addWidget(card)
+            self._cards[did].update_device(dev)
+
+        for did in list(self._cards):
+            if did not in seen:
+                card = self._cards.pop(did)
+                self._flow.removeWidget(card)
+                card.deleteLater()
+
+        online = sum(1 for d in devices if d.get("status") == "online")
+        locked = sum(1 for d in devices if d.get("mode_247"))
+        total = len(devices)
+        parts = [f"{online} online", f"{total - online} offline", f"{total} łącznie"]
+        if locked:
+            parts.append(f"🔒 {locked} × 24/7")
+        self.lbl_count.setText("  ·  ".join(parts))
+        self._grid_w.update()
